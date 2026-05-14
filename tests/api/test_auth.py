@@ -65,8 +65,7 @@ async def test_get_me_unauthorized(client: AsyncClient):
 
 
 async def test_refresh_token(client: AsyncClient, tenant: Tenant, admin_user: User):
-    # Login fresh to get a token pair — don't reuse admin_token fixture
-    # because the shared session may have already rotated it
+    # Do a fresh login to get a committed refresh token
     login = await client.post(
         "/api/v1/auth/login",
         params={"tenant_slug": tenant.slug},

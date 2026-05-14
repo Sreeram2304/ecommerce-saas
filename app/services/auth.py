@@ -1,16 +1,11 @@
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 from app.models.user import User, UserRole
 from app.models.tenant import Tenant
 from app.schemas.auth import LoginRequest, RegisterRequest, TokenResponse
-from app.core.security import verify_password, hash_password, create_access_token, create_refresh_token, decode_token
+from app.core.security import hash_password, verify_password, create_access_token, create_refresh_token, decode_token
 import uuid
-import re
-
-
-def slugify(text: str) -> str:
-    return re.sub(r'[^a-z0-9-]', '-', text.lower()).strip('-')
 
 
 class AuthService:
@@ -18,13 +13,11 @@ class AuthService:
         self.db = db
 
     async def register(self, data: RegisterRequest) -> TokenResponse:
-        # Check if tenant exists
         result = await self.db.execute(select(Tenant).where(Tenant.slug == data.tenant_slug))
         tenant = result.scalar_one_or_none()
         if not tenant:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
-        # Check if email already exists in tenant
         result = await self.db.execute(
             select(User).where(User.email == data.email, User.tenant_id == tenant.id)
         )
@@ -44,6 +37,7 @@ class AuthService:
         access_token = create_access_token(str(user.id))
         refresh_token = create_refresh_token(str(user.id))
         user.refresh_token = refresh_token
+        await self.db.commit()
 
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -57,16 +51,15 @@ class AuthService:
             select(User).where(User.email == data.email, User.tenant_id == tenant.id)
         )
         user = result.scalar_one_or_none()
-
         if not user or not verify_password(data.password, user.hashed_password):
             raise HTTPException(status_code=401, detail="Invalid credentials")
-
         if not user.is_active:
             raise HTTPException(status_code=400, detail="Account disabled")
 
         access_token = create_access_token(str(user.id))
         refresh_token = create_refresh_token(str(user.id))
         user.refresh_token = refresh_token
+        await self.db.commit()
 
         return TokenResponse(access_token=access_token, refresh_token=refresh_token)
 
@@ -76,7 +69,10 @@ class AuthService:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
 
         result = await self.db.execute(
-            select(User).where(User.id == uuid.UUID(payload["sub"]), User.refresh_token == refresh_token)
+            select(User).where(
+                User.id == uuid.UUID(payload["sub"]),
+                User.refresh_token == refresh_token,
+            )
         )
         user = result.scalar_one_or_none()
         if not user:
@@ -85,8 +81,10 @@ class AuthService:
         access_token = create_access_token(str(user.id))
         new_refresh = create_refresh_token(str(user.id))
         user.refresh_token = new_refresh
+        await self.db.commit()
 
         return TokenResponse(access_token=access_token, refresh_token=new_refresh)
 
     async def logout(self, user: User) -> None:
         user.refresh_token = None
+        await self.db.commit()
