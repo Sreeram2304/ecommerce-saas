@@ -4,11 +4,12 @@ import string
 from decimal import Decimal
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 from fastapi import HTTPException
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
-from app.models.user import User
-from app.schemas.order import OrderCreate, OrderResponse
+from app.models.user import User, UserRole
+from app.schemas.order import OrderCreate
 
 
 def generate_order_number() -> str:
@@ -24,7 +25,6 @@ class OrderService:
         if not data.items:
             raise HTTPException(status_code=400, detail="Order must have at least one item")
 
-        # Fetch and validate all products
         order_items = []
         subtotal = Decimal("0")
 
@@ -44,10 +44,9 @@ class OrderService:
 
             item_total = product.price * item_data.quantity
             subtotal += item_total
-
             order_items.append((product, item_data.quantity, item_total))
 
-        tax_rate = Decimal("0.10")  # 10% tax
+        tax_rate = Decimal("0.10")
         tax_amount = subtotal * tax_rate
         shipping_amount = Decimal("5.00") if subtotal < 50 else Decimal("0")
         total_amount = subtotal + tax_amount + shipping_amount
@@ -70,19 +69,28 @@ class OrderService:
             order_item = OrderItem(
                 order_id=order.id,
                 product_id=product.id,
-                product_name=product.name,  # snapshot
+                product_name=product.name,
                 quantity=quantity,
                 unit_price=product.price,
                 total_price=item_total,
             )
             self.db.add(order_item)
-            product.stock_quantity -= quantity  # deduct stock
+            product.stock_quantity -= quantity
 
-        return order
+        await self.db.flush()
+
+        # Reload with items eagerly loaded
+        result = await self.db.execute(
+            select(Order)
+            .options(selectinload(Order.items))
+            .where(Order.id == order.id)
+        )
+        return result.scalar_one()
 
     async def get_orders(self, current_user: User) -> list[Order]:
         result = await self.db.execute(
             select(Order)
+            .options(selectinload(Order.items))
             .where(Order.tenant_id == current_user.tenant_id)
             .order_by(Order.created_at.desc())
         )
@@ -90,18 +98,26 @@ class OrderService:
 
     async def get_order_by_id(self, order_id: uuid.UUID, current_user: User) -> Order:
         result = await self.db.execute(
-            select(Order).where(Order.id == order_id, Order.tenant_id == current_user.tenant_id)
+            select(Order)
+            .options(selectinload(Order.items))
+            .where(Order.id == order_id, Order.tenant_id == current_user.tenant_id)
         )
         order = result.scalar_one_or_none()
         if not order:
             raise HTTPException(status_code=404, detail="Order not found")
-        # Customers can only see their own orders
-        from app.models.user import UserRole
         if current_user.role == UserRole.CUSTOMER and order.customer_id != current_user.id:
             raise HTTPException(status_code=403, detail="Access denied")
         return order
 
     async def update_order_status(self, order_id: uuid.UUID, new_status: OrderStatus, current_user: User) -> Order:
-        order = await self.get_order_by_id(order_id, current_user)
+        result = await self.db.execute(
+            select(Order)
+            .options(selectinload(Order.items))
+            .where(Order.id == order_id, Order.tenant_id == current_user.tenant_id)
+        )
+        order = result.scalar_one_or_none()
+        if not order:
+            raise HTTPException(status_code=404, detail="Order not found")
         order.status = new_status
+        await self.db.flush()
         return order
