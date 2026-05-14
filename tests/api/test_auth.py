@@ -65,7 +65,6 @@ async def test_get_me_unauthorized(client: AsyncClient):
 
 
 async def test_refresh_token(client: AsyncClient, tenant: Tenant, admin_user: User):
-    # Do a fresh login to get a committed refresh token
     login = await client.post(
         "/api/v1/auth/login",
         params={"tenant_slug": tenant.slug},
@@ -73,7 +72,6 @@ async def test_refresh_token(client: AsyncClient, tenant: Tenant, admin_user: Us
     )
     assert login.status_code == 200
     refresh_token = login.json()["refresh_token"]
-
     resp = await client.post("/api/v1/auth/refresh", json={"refresh_token": refresh_token})
     assert resp.status_code == 200
     assert "access_token" in resp.json()
